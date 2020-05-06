@@ -1,0 +1,107 @@
+# -*- coding: utf-8 -*-
+
+# Define your item pipelines here
+#
+# Don't forget to add your pipeline to the ITEM_PIPELINES setting
+# See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
+
+import requests
+import pymongo
+import pymysql
+import redis
+
+
+class MasterPipeline(object):
+    def __init__(self,redis_url):
+        self.redis_url = redis_url
+        self.r = redis.Redis.from_url(self.redis_url, decode_responses=True)
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(
+            redis_url=crawler.settings.get('REDIS_URL')
+        )
+
+    def process_item(self, item, spider):
+        self.r.lpush('myredis:start_urls', item['url'])
+
+
+class MongoPipeline(object):
+    def __init__(self, mongo_uri, mongo_db):
+        self.mongo_uri = mongo_uri
+        self.mongo_db = mongo_db
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(mongo_uri=crawler.settings.get('MONGO_URI'),
+                   mongo_db=crawler.settings.get('MONGO_DB'))
+
+    def open_spider(self, spider):
+        self.client = pymongo.MongoClient(self.mongo_uri)
+        self.db = self.client[self.mongo_db]
+
+    def process_item(self, item, spider):
+        self.db[item.collection].insert(dict(item))
+        return item
+
+    def close_spider(self, spider):
+        self.client.close()
+
+
+class MysqlPipeline():
+    def __init__(self, host, database, user, password, port):
+        self.host = host
+        self.database = database
+        self.user = user
+        self.password = password
+        self.port = port
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(
+            host=crawler.settings.get('MYSQL_HOST'),
+            database=crawler.settings.get('MYSQL_DATABASE'),
+            user=crawler.settings.get('MYSQL_USER'),
+            password=crawler.settings.get('MYSQL_PASSWORD'),
+            port=crawler.settings.get('MYSQL_PORT'),
+        )
+
+    def open_spider(self, spider):
+        self.db = pymysql.connect(self.host, self.user, self.password, self.database, charset='utf8',
+                                  port=self.port)
+        self.cursor = self.db.cursor()
+
+    def close_spider(self, spider):
+        self.db.close()
+
+    def process_item(self, item, spider):
+        data = dict(item)
+        keys = ', '.join(data.keys())
+        values = ', '.join(['%s'] * len(data))
+        sql = 'insert into %s (%s) values (%s)' % (item.table, keys, values)
+        self.cursor.execute(sql, tuple(data.values()))
+        self.db.commit()
+        return item
+
+
+# 以Rest API方式访问Hbase
+class HbasePipeline():
+    def __init__(self, baseurl):
+        self.baseurl = baseurl
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(
+            baseurl=crawler.settings.get('HBASE_BASEURL'),
+        )
+
+    def process_item(self, item, spider):
+        url = item['url']
+        page = item['page']
+        insert1 = '/hbase/insertRow?tableName=newscrapy&familyName=news'
+        insert2 = '&rowKey=' + url
+        insert3 = '&column=page&value' + page
+
+        response = requests.post(self.baseurl + insert1 + insert2 + insert3, headers={"Accept": "application/json"})
+        print(response.json())
+        return item
